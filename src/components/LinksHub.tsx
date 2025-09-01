@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from 'react-query';
 import {
   Grid,
@@ -23,6 +23,7 @@ import {
   IconButton,
   Tooltip,
   Link,
+  Alert,
 } from '@mui/material';
 import {
   OpenInNew as OpenIcon,
@@ -38,19 +39,56 @@ import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 
 import { jenkinsService } from '../services/jenkinsApi';
-import { JenkinsJob, JenkinsBuild, ClaimedBuild } from '../types';
+import { 
+  AllureReportData, 
+  JenkinsBuildConfig, 
+  DashboardConfig,
+  ClaimedBuild 
+} from '../types';
 
-const LinksHub: React.FC = () => {
-  const [selectedBuild, setSelectedBuild] = useState<{ job: JenkinsJob; build: JenkinsBuild } | null>(null);
+interface LinksHubProps {
+  config: DashboardConfig;
+}
+
+const LinksHub: React.FC<LinksHubProps> = ({ config }) => {
+  const [selectedBuild, setSelectedBuild] = useState<{ buildConfig: JenkinsBuildConfig; reportData: AllureReportData } | null>(null);
   const [claimDialogOpen, setClaimDialogOpen] = useState(false);
   const [claimedBy, setClaimedBy] = useState('');
   const [claimNotes, setClaimNotes] = useState('');
   const [claimedBuilds, setClaimedBuilds] = useState<ClaimedBuild[]>([]);
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Fetch Jenkins jobs
+  // Initialize Jenkins service if we have build configurations
+  useEffect(() => {
+    if (config.buildConfigs.length > 0 && !isInitialized) {
+      // Try to get saved auth config from localStorage
+      const savedAuth = localStorage.getItem('jenkins-auth-config');
+      if (savedAuth) {
+        try {
+          const authConfig = JSON.parse(savedAuth);
+          jenkinsService.initialize(authConfig);
+          setIsInitialized(true);
+        } catch (error) {
+          console.error('Failed to initialize Jenkins service:', error);
+        }
+      }
+    }
+  }, [config.buildConfigs, isInitialized]);
+
+  // Fetch Allure reports for configured builds
   const {
-    data: jobs = [],
-  } = useQuery('jenkins-jobs-links', jenkinsService.getJobs);
+    data: allureReports = [],
+    isLoading: reportsLoading,
+    error: reportsError,
+  } = useQuery(
+    ['allure-reports-links', config.buildConfigs],
+    () => jenkinsService.getAllureReportsForBuilds(config.buildConfigs),
+    {
+      enabled: isInitialized && config.buildConfigs.length > 0,
+      refetchInterval: config.refreshInterval,
+      retry: config.maxRetries,
+    }
+  );
 
   const handleCopyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -82,27 +120,55 @@ const LinksHub: React.FC = () => {
     return claimedBuilds.find(claim => claim.jobName === jobName && claim.buildNumber === buildNumber);
   };
 
-  const getMavenCommand = (job: JenkinsJob, build: JenkinsBuild) => {
+  const getMavenCommand = (buildConfig: JenkinsBuildConfig) => {
     // This would be extracted from the actual build configuration
     // For now, returning a template command
-    return `mvn clean test -Dtest=${job.name} -Dspring.profiles.active=test`;
+    return `mvn clean test -Dtest=${buildConfig.jobName} -Dspring.profiles.active=test`;
   };
 
-  const getGitHubInfo = (build: JenkinsBuild) => {
+  const getGitHubInfo = (buildConfig: JenkinsBuildConfig) => {
     // This would be extracted from SCM information
     return {
-      repo: build.gitRepo || 'https://github.com/company/project',
-      branch: build.gitBranch || 'main',
-      commit: build.gitCommit || 'abc123def456',
+      repo: 'https://github.com/company/project',
+      branch: 'main',
+      commit: 'abc123def456',
     };
   };
 
-  const recentBuilds = jobs
-    .flatMap(job => 
-      job.builds?.slice(0, 5).map(build => ({ job, build })) || []
-    )
-    .sort((a, b) => b.build.timestamp - a.build.timestamp)
+  // Create a list of recent builds from the configured build configurations
+  const recentBuilds = allureReports
+    .map(report => ({
+      buildConfig: report.buildConfig,
+      reportData: report,
+      lastUpdated: report.lastUpdated,
+      status: report.status,
+    }))
+    .sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime())
     .slice(0, 20);
+
+  if (!isInitialized) {
+    return (
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Please configure your Jenkins authentication and build URLs in the Configuration section.
+      </Alert>
+    );
+  }
+
+  if (config.buildConfigs.length === 0) {
+    return (
+      <Alert severity="warning" sx={{ mb: 2 }}>
+        No build configurations found. Please add build configurations to start viewing build information.
+      </Alert>
+    );
+  }
+
+  if (reportsError) {
+    return (
+      <Alert severity="error" sx={{ mb: 2 }}>
+        Failed to load build information. Please check your connection and authentication.
+      </Alert>
+    );
+  }
 
   return (
     <Box>
@@ -119,82 +185,92 @@ const LinksHub: React.FC = () => {
           <Typography variant="h6" gutterBottom>
             Recent Builds
           </Typography>
-          <TableContainer component={Paper}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Job Name</TableCell>
-                  <TableCell>Build #</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Duration</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {recentBuilds.map(({ job, build }) => {
-                  const isClaimed = isBuildClaimed(job.name, build.number);
-                  const claim = isClaimed as ClaimedBuild;
+          {reportsLoading ? (
+            <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 4 }}>
+              Loading build information...
+            </Typography>
+          ) : recentBuilds.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 4 }}>
+              No builds found
+            </Typography>
+          ) : (
+            <TableContainer component={Paper}>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Build Name</TableCell>
+                    <TableCell>Job Name</TableCell>
+                    <TableCell>Build #</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Last Updated</TableCell>
+                    <TableCell>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {recentBuilds.map(({ buildConfig, reportData, status }) => {
+                    const isClaimed = isBuildClaimed(buildConfig.jobName, buildConfig.buildNumber);
+                    const claim = isClaimed as ClaimedBuild;
 
-                  return (
-                    <TableRow key={`${job.name}-${build.number}`}>
-                      <TableCell>{job.name}</TableCell>
-                      <TableCell>#{build.number}</TableCell>
-                      <TableCell>
-                        <Chip
-                          label={build.result || 'IN_PROGRESS'}
-                          color={
-                            build.result === 'SUCCESS' ? 'success' :
-                            build.result === 'FAILURE' ? 'error' :
-                            build.result === 'UNSTABLE' ? 'warning' : 'default'
-                          }
-                          size="small"
-                        />
-                      </TableCell>
-                      <TableCell>{format(new Date(build.timestamp), 'MMM dd, HH:mm')}</TableCell>
-                      <TableCell>{Math.round(build.duration / 1000)}s</TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', gap: 1 }}>
-                          <Tooltip title="View Build Details">
-                            <IconButton
-                              size="small"
-                              onClick={() => setSelectedBuild({ job, build })}
-                            >
-                              <OpenIcon />
-                            </IconButton>
-                          </Tooltip>
-                          {build.result === 'FAILURE' && !isClaimed && (
-                            <Tooltip title="Claim for Investigation">
+                    return (
+                      <TableRow key={`${buildConfig.jobName}-${buildConfig.buildNumber}`}>
+                        <TableCell>{buildConfig.name}</TableCell>
+                        <TableCell>{buildConfig.jobName}</TableCell>
+                        <TableCell>#{buildConfig.buildNumber}</TableCell>
+                        <TableCell>
+                          <Chip
+                            label={status}
+                            color={
+                              status === 'success' ? 'success' :
+                              status === 'error' ? 'error' :
+                              status === 'loading' ? 'warning' : 'default'
+                            }
+                            size="small"
+                          />
+                        </TableCell>
+                        <TableCell>{format(reportData.lastUpdated, 'MMM dd, HH:mm')}</TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', gap: 1 }}>
+                            <Tooltip title="View Build Details">
                               <IconButton
                                 size="small"
-                                color="error"
-                                onClick={() => {
-                                  setSelectedBuild({ job, build });
-                                  setClaimDialogOpen(true);
-                                }}
+                                onClick={() => setSelectedBuild({ buildConfig, reportData })}
                               >
-                                <BugIcon />
+                                <OpenIcon />
                               </IconButton>
                             </Tooltip>
-                          )}
-                          {isClaimed && (
-                            <Tooltip title={`Claimed by ${claim.claimedBy}`}>
-                              <Chip
-                                icon={<PersonIcon />}
-                                label={claim.claimedBy}
-                                size="small"
-                                color="info"
-                              />
-                            </Tooltip>
-                          )}
-                        </Box>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                            {status === 'error' && !isClaimed && (
+                              <Tooltip title="Claim for Investigation">
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => {
+                                    setSelectedBuild({ buildConfig, reportData });
+                                    setClaimDialogOpen(true);
+                                  }}
+                                >
+                                  <BugIcon />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                            {isClaimed && (
+                              <Tooltip title={`Claimed by ${claim.claimedBy}`}>
+                                <Chip
+                                  icon={<PersonIcon />}
+                                  label={claim.claimedBy}
+                                  size="small"
+                                  color="info"
+                                />
+                              </Tooltip>
+                            )}
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
         </CardContent>
       </Card>
 
@@ -208,7 +284,7 @@ const LinksHub: React.FC = () => {
         {selectedBuild && (
           <>
             <DialogTitle>
-              Build Details - {selectedBuild.job.name} #{selectedBuild.build.number}
+              Build Details - {selectedBuild.buildConfig.name} #{selectedBuild.buildConfig.buildNumber}
             </DialogTitle>
             <DialogContent>
               <Grid container spacing={3}>
@@ -223,7 +299,7 @@ const LinksHub: React.FC = () => {
                       <Button
                         variant="outlined"
                         startIcon={<OpenIcon />}
-                        href={jenkinsService.getBuildLogUrl(selectedBuild.job.name, selectedBuild.build.number)}
+                        href={jenkinsService.getBuildConsoleUrl(selectedBuild.buildConfig.buildUrl)}
                         target="_blank"
                         fullWidth
                         sx={{ mb: 1 }}
@@ -233,7 +309,7 @@ const LinksHub: React.FC = () => {
                       <Button
                         variant="outlined"
                         startIcon={<OpenIcon />}
-                        href={jenkinsService.getBuildUrl(selectedBuild.job.name, selectedBuild.build.number)}
+                        href={selectedBuild.buildConfig.buildUrl}
                         target="_blank"
                         fullWidth
                       >
@@ -254,7 +330,7 @@ const LinksHub: React.FC = () => {
                       <Button
                         variant="outlined"
                         startIcon={<OpenIcon />}
-                        href={jenkinsService.getAllureReportUrl(selectedBuild.job.name, selectedBuild.build.number)}
+                        href={jenkinsService.getAllureReportUrl(selectedBuild.buildConfig.buildUrl)}
                         target="_blank"
                         fullWidth
                         sx={{ mb: 1 }}
@@ -265,7 +341,7 @@ const LinksHub: React.FC = () => {
                         variant="outlined"
                         startIcon={<CopyIcon />}
                         onClick={() => handleCopyToClipboard(
-                          jenkinsService.getAllureReportUrl(selectedBuild.job.name, selectedBuild.build.number),
+                          jenkinsService.getAllureReportUrl(selectedBuild.buildConfig.buildUrl),
                           'Allure Report URL'
                         )}
                         fullWidth
@@ -288,7 +364,7 @@ const LinksHub: React.FC = () => {
                         fullWidth
                         multiline
                         rows={3}
-                        value={getMavenCommand(selectedBuild.job, selectedBuild.build)}
+                        value={getMavenCommand(selectedBuild.buildConfig)}
                         variant="outlined"
                         size="small"
                         sx={{ mb: 1 }}
@@ -297,7 +373,7 @@ const LinksHub: React.FC = () => {
                         variant="outlined"
                         startIcon={<CopyIcon />}
                         onClick={() => handleCopyToClipboard(
-                          getMavenCommand(selectedBuild.job, selectedBuild.build),
+                          getMavenCommand(selectedBuild.buildConfig),
                           'Maven Command'
                         )}
                         fullWidth
@@ -317,7 +393,7 @@ const LinksHub: React.FC = () => {
                         GitHub Information
                       </Typography>
                       {(() => {
-                        const gitInfo = getGitHubInfo(selectedBuild.build);
+                        const gitInfo = getGitHubInfo(selectedBuild.buildConfig);
                         return (
                           <Box>
                             <Typography variant="body2" gutterBottom>
@@ -376,7 +452,7 @@ const LinksHub: React.FC = () => {
         <DialogActions>
           <Button onClick={() => setClaimDialogOpen(false)}>Cancel</Button>
           <Button
-            onClick={() => selectedBuild && handleClaimBuild(selectedBuild.job.name, selectedBuild.build.number)}
+            onClick={() => selectedBuild && handleClaimBuild(selectedBuild.buildConfig.jobName, selectedBuild.buildConfig.buildNumber)}
             variant="contained"
             color="primary"
           >

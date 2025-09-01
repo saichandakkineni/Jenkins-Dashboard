@@ -15,7 +15,7 @@ import {
   Dashboard as DashboardIcon,
   Analytics as AnalyticsIcon,
   Link as LinkIcon,
-  Settings as SettingsIcon,
+  Build as BuildIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 240;
@@ -24,6 +24,7 @@ const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
   { text: 'Data & Analysis', icon: <AnalyticsIcon />, path: '/analysis' },
   { text: 'Links Hub', icon: <LinkIcon />, path: '/links' },
+  { text: 'Configuration', icon: <BuildIcon />, path: '/configuration' },
 ];
 
 const Navigation: React.FC = () => {

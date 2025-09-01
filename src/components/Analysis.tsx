@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from 'react-query';
 import {
   Grid,
@@ -17,6 +17,7 @@ import {
   Paper,
   Chip,
   LinearProgress,
+  Alert,
 } from '@mui/material';
 import {
   LineChart,
@@ -33,12 +34,22 @@ import {
 import { format } from 'date-fns';
 
 import { jenkinsService } from '../services/jenkinsApi';
-import { HistoricalTrend, FlakyTest, LongestRunningTest, EnvironmentMatrix } from '../types';
+import { 
+  AllureReportData, 
+  DashboardConfig,
+  HistoricalTrend, 
+  FlakyTest, 
+  EnvironmentMatrix 
+} from '../types';
 
 interface TabPanelProps {
   children?: React.ReactNode;
   index: number;
   value: number;
+}
+
+interface AnalysisProps {
+  config: DashboardConfig;
 }
 
 function TabPanel(props: TabPanelProps) {
@@ -52,58 +63,214 @@ function TabPanel(props: TabPanelProps) {
       aria-labelledby={`analysis-tab-${index}`}
       {...other}
     >
+      {value !== index && <Box sx={{ p: 3 }}>{children}</Box>}
       {value === index && <Box sx={{ p: 3 }}>{children}</Box>}
     </div>
   );
 }
 
-const Analysis: React.FC = () => {
+const Analysis: React.FC<AnalysisProps> = ({ config }) => {
   const [tabValue, setTabValue] = useState(0);
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Fetch Jenkins jobs for analysis
+  // Initialize Jenkins service if we have build configurations
+  useEffect(() => {
+    if (config.buildConfigs.length > 0 && !isInitialized) {
+      // Try to get saved auth config from localStorage
+      const savedAuth = localStorage.getItem('jenkins-auth-config');
+      if (savedAuth) {
+        try {
+          const authConfig = JSON.parse(savedAuth);
+          jenkinsService.initialize(authConfig);
+          setIsInitialized(true);
+        } catch (error) {
+          console.error('Failed to initialize Jenkins service:', error);
+        }
+      }
+    }
+  }, [config.buildConfigs, isInitialized]);
+
+  // Fetch Allure reports for analysis
   const {
-    isLoading: jobsLoading,
-  } = useQuery('jenkins-jobs-analysis', jenkinsService.getJobs);
+    data: allureReports = [],
+    isLoading: reportsLoading,
+    error: reportsError,
+  } = useQuery(
+    ['allure-reports-analysis', config.buildConfigs],
+    () => jenkinsService.getAllureReportsForBuilds(config.buildConfigs),
+    {
+      enabled: isInitialized && config.buildConfigs.length > 0,
+      refetchInterval: config.refreshInterval,
+      retry: config.maxRetries,
+    }
+  );
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
   };
 
-  // Mock data for demonstration - in real implementation, this would be calculated from actual data
-  const historicalTrendData: HistoricalTrend[] = [
-    { date: '2024-01-01', totalTests: 150, passedTests: 140, failedTests: 10, successRate: 93.3 },
-    { date: '2024-01-02', totalTests: 155, passedTests: 145, failedTests: 10, successRate: 93.5 },
-    { date: '2024-01-03', totalTests: 160, passedTests: 150, failedTests: 10, successRate: 93.8 },
-    { date: '2024-01-04', totalTests: 165, passedTests: 155, failedTests: 10, successRate: 93.9 },
-    { date: '2024-01-05', totalTests: 170, passedTests: 160, failedTests: 10, successRate: 94.1 },
-  ];
+  // Generate historical trend data from Allure reports
+  const generateHistoricalTrendData = (): HistoricalTrend[] => {
+    if (!allureReports.length) return [];
 
-  const flakyTestsData: FlakyTest[] = [
-    { testName: 'UserLoginTest.testValidLogin', jobName: 'UI-Tests', failureRate: 25.5, totalRuns: 20, lastFailure: new Date() },
-    { testName: 'PaymentTest.testPaymentFlow', jobName: 'API-Tests', failureRate: 18.2, totalRuns: 15, lastFailure: new Date() },
-    { testName: 'SearchTest.testSearchResults', jobName: 'UI-Tests', failureRate: 12.8, totalRuns: 25, lastFailure: new Date() },
-  ];
+    const reportsByDate = allureReports.reduce((acc, report) => {
+      if (report.summary) {
+        const date = format(report.lastUpdated, 'yyyy-MM-dd');
+        if (!acc[date]) {
+          acc[date] = [];
+        }
+        acc[date].push(report);
+      }
+      return acc;
+    }, {} as Record<string, AllureReportData[]>);
 
-  const longestRunningTestsData: LongestRunningTest[] = [
-    { testName: 'FullRegressionTest', jobName: 'Regression-Suite', averageDuration: 1800, maxDuration: 2400, minDuration: 1200 },
-    { testName: 'DatabaseMigrationTest', jobName: 'Database-Tests', averageDuration: 900, maxDuration: 1200, minDuration: 600 },
-    { testName: 'PerformanceTest', jobName: 'Performance-Suite', averageDuration: 600, maxDuration: 800, minDuration: 400 },
-  ];
+    return Object.entries(reportsByDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, reports]) => {
+        const aggregatedResults = reports.reduce(
+          (acc, report) => {
+            if (report.summary) {
+              acc.total += report.summary.total;
+              acc.passed += report.summary.passed;
+              acc.failed += report.summary.failed;
+            }
+            return acc;
+          },
+          { total: 0, passed: 0, failed: 0 }
+        );
 
-  const environmentMatrixData: EnvironmentMatrix[] = [
-    { environment: 'Production', totalTests: 200, passedTests: 190, failedTests: 10, successRate: 95.0 },
-    { environment: 'Staging', totalTests: 180, passedTests: 170, failedTests: 10, successRate: 94.4 },
-    { environment: 'Development', totalTests: 160, passedTests: 150, failedTests: 10, successRate: 93.8 },
-    { environment: 'QA', totalTests: 140, passedTests: 130, failedTests: 10, successRate: 92.9 },
-  ];
+        const successRate = aggregatedResults.total > 0 
+          ? (aggregatedResults.passed / aggregatedResults.total) * 100 
+          : 0;
 
-  const formatDuration = (seconds: number) => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}m ${remainingSeconds}s`;
+        return {
+          date,
+          totalTests: aggregatedResults.total,
+          passedTests: aggregatedResults.passed,
+          failedTests: aggregatedResults.failed,
+          successRate: Math.round(successRate * 100) / 100,
+        };
+      });
   };
 
-  if (jobsLoading) {
+  // Generate flaky tests data from Allure results
+  const generateFlakyTestsData = (): FlakyTest[] => {
+    if (!allureReports.length) return [];
+
+    const testResults = allureReports.flatMap(report => 
+      report.results.map(result => ({
+        testName: result.name,
+        jobName: report.buildConfig.jobName,
+        status: result.status,
+        timestamp: report.lastUpdated,
+      }))
+    );
+
+    // Group by test name and calculate failure rate
+    const testStats = testResults.reduce((acc, test) => {
+      if (!acc[test.testName]) {
+        acc[test.testName] = {
+          testName: test.testName,
+          jobName: test.jobName,
+          totalRuns: 0,
+          failures: 0,
+          lastFailure: null as Date | null,
+        };
+      }
+      
+      acc[test.testName].totalRuns++;
+      if (test.status === 'failed' || test.status === 'broken') {
+        acc[test.testName].failures++;
+        if (!acc[test.testName].lastFailure || test.timestamp > acc[test.testName].lastFailure!) {
+          acc[test.testName].lastFailure = test.timestamp;
+        }
+      }
+      
+      return acc;
+    }, {} as Record<string, any>);
+
+    return Object.values(testStats)
+      .filter(test => test.failures > 0)
+      .map(test => ({
+        testName: test.testName,
+        jobName: test.jobName,
+        failureRate: (test.failures / test.totalRuns) * 100,
+        totalRuns: test.totalRuns,
+        lastFailure: test.lastFailure || new Date(),
+      }))
+      .sort((a, b) => b.failureRate - a.failureRate)
+      .slice(0, 10); // Top 10 flaky tests
+  };
+
+  // Generate environment matrix data
+  const generateEnvironmentMatrixData = (): EnvironmentMatrix[] => {
+    if (!allureReports.length) return [];
+
+    const reportsByEnvironment = allureReports.reduce((acc, report) => {
+      const env = report.buildConfig.environment || 'default';
+      if (!acc[env]) {
+        acc[env] = [];
+      }
+      acc[env].push(report);
+      return acc;
+    }, {} as Record<string, AllureReportData[]>);
+
+    return Object.entries(reportsByEnvironment).map(([environment, reports]) => {
+      const aggregatedResults = reports.reduce(
+        (acc, report) => {
+          if (report.summary) {
+            acc.total += report.summary.total;
+            acc.passed += report.summary.passed;
+            acc.failed += report.summary.failed;
+          }
+          return acc;
+        },
+        { total: 0, passed: 0, failed: 0 }
+      );
+
+      const successRate = aggregatedResults.total > 0 
+        ? (aggregatedResults.passed / aggregatedResults.total) * 100 
+        : 0;
+
+      return {
+        environment,
+        totalTests: aggregatedResults.total,
+        passedTests: aggregatedResults.passed,
+        failedTests: aggregatedResults.failed,
+        successRate: Math.round(successRate * 100) / 100,
+      };
+    });
+  };
+
+  const historicalTrendData = generateHistoricalTrendData();
+  const flakyTestsData = generateFlakyTestsData();
+  const environmentMatrixData = generateEnvironmentMatrixData();
+
+  if (!isInitialized) {
+    return (
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Please configure your Jenkins authentication and build URLs in the Configuration section.
+      </Alert>
+    );
+  }
+
+  if (config.buildConfigs.length === 0) {
+    return (
+      <Alert severity="warning" sx={{ mb: 2 }}>
+        No build configurations found. Please add build configurations to start analyzing Allure reports.
+      </Alert>
+    );
+  }
+
+  if (reportsError) {
+    return (
+      <Alert severity="error" sx={{ mb: 2 }}>
+        Failed to load analysis data. Please check your connection and authentication.
+      </Alert>
+    );
+  }
+
+  if (reportsLoading) {
     return (
       <Box>
         <LinearProgress />
@@ -124,7 +291,6 @@ const Analysis: React.FC = () => {
         <Tabs value={tabValue} onChange={handleTabChange} aria-label="analysis tabs">
           <Tab label="Historical Trends" />
           <Tab label="Flakiness Tracker" />
-          <Tab label="Longest Running Tests" />
           <Tab label="Environment Matrix" />
         </Tabs>
       </Box>
@@ -138,17 +304,25 @@ const Analysis: React.FC = () => {
                 <Typography variant="h6" gutterBottom>
                   Test Success Rate Over Time
                 </Typography>
-                <ResponsiveContainer width="100%" height={400}>
-                  <LineChart data={historicalTrendData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="successRate" stroke="#8884d8" name="Success Rate (%)" />
-                    <Line type="monotone" dataKey="totalTests" stroke="#82ca9d" name="Total Tests" />
-                  </LineChart>
-                </ResponsiveContainer>
+                {historicalTrendData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <LineChart data={historicalTrendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="successRate" stroke="#8884d8" name="Success Rate (%)" />
+                      <Line type="monotone" dataKey="totalTests" stroke="#82ca9d" name="Total Tests" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <Box sx={{ height: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No historical data available
+                    </Typography>
+                  </Box>
+                )}
               </CardContent>
             </Card>
           </Grid>
@@ -162,118 +336,65 @@ const Analysis: React.FC = () => {
             <Typography variant="h6" gutterBottom>
               Flaky Tests Analysis
             </Typography>
-            <TableContainer component={Paper}>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Test Name</TableCell>
-                    <TableCell>Job Name</TableCell>
-                    <TableCell>Failure Rate (%)</TableCell>
-                    <TableCell>Total Runs</TableCell>
-                    <TableCell>Last Failure</TableCell>
-                    <TableCell>Status</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {flakyTestsData.map((test, index) => (
-                    <TableRow key={index}>
-                      <TableCell>{test.testName}</TableCell>
-                      <TableCell>{test.jobName}</TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                          <Box sx={{ width: '100%', mr: 1 }}>
-                            <LinearProgress
-                              variant="determinate"
-                              value={test.failureRate}
-                              color={test.failureRate > 20 ? 'error' : test.failureRate > 10 ? 'warning' : 'success'}
-                            />
-                          </Box>
-                          <Box sx={{ minWidth: 35 }}>
-                            <Typography variant="body2" color="text.secondary">
-                              {test.failureRate.toFixed(1)}%
-                            </Typography>
-                          </Box>
-                        </Box>
-                      </TableCell>
-                      <TableCell>{test.totalRuns}</TableCell>
-                      <TableCell>{format(test.lastFailure, 'MMM dd, yyyy')}</TableCell>
-                      <TableCell>
-                        <Chip
-                          label={test.failureRate > 20 ? 'High' : test.failureRate > 10 ? 'Medium' : 'Low'}
-                          color={test.failureRate > 20 ? 'error' : test.failureRate > 10 ? 'warning' : 'success'}
-                          size="small"
-                        />
-                      </TableCell>
+            {flakyTestsData.length > 0 ? (
+              <TableContainer component={Paper}>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Test Name</TableCell>
+                      <TableCell>Job Name</TableCell>
+                      <TableCell>Failure Rate (%)</TableCell>
+                      <TableCell>Total Runs</TableCell>
+                      <TableCell>Last Failure</TableCell>
+                      <TableCell>Status</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  </TableHead>
+                  <TableBody>
+                    {flakyTestsData.map((test, index) => (
+                      <TableRow key={index}>
+                        <TableCell>{test.testName}</TableCell>
+                        <TableCell>{test.jobName}</TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <Box sx={{ width: '100%', mr: 1 }}>
+                              <LinearProgress
+                                variant="determinate"
+                                value={test.failureRate}
+                                color={test.failureRate > 20 ? 'error' : test.failureRate > 10 ? 'warning' : 'success'}
+                              />
+                            </Box>
+                            <Box sx={{ minWidth: 35 }}>
+                              <Typography variant="body2" color="text.secondary">
+                                {test.failureRate.toFixed(1)}%
+                              </Typography>
+                            </Box>
+                          </Box>
+                        </TableCell>
+                        <TableCell>{test.totalRuns}</TableCell>
+                        <TableCell>{format(test.lastFailure, 'MMM dd, yyyy')}</TableCell>
+                        <TableCell>
+                          <Chip
+                            label={test.failureRate > 20 ? 'High' : test.failureRate > 10 ? 'Medium' : 'Low'}
+                            color={test.failureRate > 20 ? 'error' : test.failureRate > 10 ? 'warning' : 'success'}
+                            size="small"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            ) : (
+              <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 4 }}>
+                No flaky tests detected
+              </Typography>
+            )}
           </CardContent>
         </Card>
       </TabPanel>
 
-      {/* Longest Running Tests */}
-      <TabPanel value={tabValue} index={2}>
-        <Grid container spacing={3}>
-          <Grid item xs={12}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Test Duration Analysis
-                </Typography>
-                <ResponsiveContainer width="100%" height={400}>
-                  <BarChart data={longestRunningTestsData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="testName" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="averageDuration" fill="#8884d8" name="Average Duration (s)" />
-                    <Bar dataKey="maxDuration" fill="#82ca9d" name="Max Duration (s)" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={12}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Detailed Test Duration Table
-                </Typography>
-                <TableContainer component={Paper}>
-                  <Table>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Test Name</TableCell>
-                        <TableCell>Job Name</TableCell>
-                        <TableCell>Average Duration</TableCell>
-                        <TableCell>Max Duration</TableCell>
-                        <TableCell>Min Duration</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {longestRunningTestsData.map((test, index) => (
-                        <TableRow key={index}>
-                          <TableCell>{test.testName}</TableCell>
-                          <TableCell>{test.jobName}</TableCell>
-                          <TableCell>{formatDuration(test.averageDuration)}</TableCell>
-                          <TableCell>{formatDuration(test.maxDuration)}</TableCell>
-                          <TableCell>{formatDuration(test.minDuration)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      </TabPanel>
-
       {/* Environment Matrix */}
-      <TabPanel value={tabValue} index={3}>
+      <TabPanel value={tabValue} index={2}>
         <Grid container spacing={3}>
           <Grid item xs={12}>
             <Card>
@@ -281,16 +402,24 @@ const Analysis: React.FC = () => {
                 <Typography variant="h6" gutterBottom>
                   Environment Success Rates
                 </Typography>
-                <ResponsiveContainer width="100%" height={400}>
-                  <BarChart data={environmentMatrixData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="environment" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="successRate" fill="#8884d8" name="Success Rate (%)" />
-                  </BarChart>
-                </ResponsiveContainer>
+                {environmentMatrixData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <BarChart data={environmentMatrixData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="environment" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="successRate" fill="#8884d8" name="Success Rate (%)" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <Box sx={{ height: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No environment data available
+                    </Typography>
+                  </Box>
+                )}
               </CardContent>
             </Card>
           </Grid>
@@ -300,53 +429,59 @@ const Analysis: React.FC = () => {
                 <Typography variant="h6" gutterBottom>
                   Environment Test Matrix
                 </Typography>
-                <TableContainer component={Paper}>
-                  <Table>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Environment</TableCell>
-                        <TableCell>Total Tests</TableCell>
-                        <TableCell>Passed Tests</TableCell>
-                        <TableCell>Failed Tests</TableCell>
-                        <TableCell>Success Rate</TableCell>
-                        <TableCell>Status</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {environmentMatrixData.map((env, index) => (
-                        <TableRow key={index}>
-                          <TableCell>{env.environment}</TableCell>
-                          <TableCell>{env.totalTests}</TableCell>
-                          <TableCell>{env.passedTests}</TableCell>
-                          <TableCell>{env.failedTests}</TableCell>
-                          <TableCell>
-                            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                              <Box sx={{ width: '100%', mr: 1 }}>
-                                <LinearProgress
-                                  variant="determinate"
-                                  value={env.successRate}
-                                  color={env.successRate > 95 ? 'success' : env.successRate > 90 ? 'warning' : 'error'}
-                                />
-                              </Box>
-                              <Box sx={{ minWidth: 35 }}>
-                                <Typography variant="body2" color="text.secondary">
-                                  {env.successRate.toFixed(1)}%
-                                </Typography>
-                              </Box>
-                            </Box>
-                          </TableCell>
-                          <TableCell>
-                            <Chip
-                              label={env.successRate > 95 ? 'Excellent' : env.successRate > 90 ? 'Good' : 'Needs Attention'}
-                              color={env.successRate > 95 ? 'success' : env.successRate > 90 ? 'warning' : 'error'}
-                              size="small"
-                            />
-                          </TableCell>
+                {environmentMatrixData.length > 0 ? (
+                  <TableContainer component={Paper}>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Environment</TableCell>
+                          <TableCell>Total Tests</TableCell>
+                          <TableCell>Passed Tests</TableCell>
+                          <TableCell>Failed Tests</TableCell>
+                          <TableCell>Success Rate</TableCell>
+                          <TableCell>Status</TableCell>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                      </TableHead>
+                      <TableBody>
+                        {environmentMatrixData.map((env, index) => (
+                          <TableRow key={index}>
+                            <TableCell>{env.environment}</TableCell>
+                            <TableCell>{env.totalTests}</TableCell>
+                            <TableCell>{env.passedTests}</TableCell>
+                            <TableCell>{env.failedTests}</TableCell>
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                <Box sx={{ width: '100%', mr: 1 }}>
+                                  <LinearProgress
+                                    variant="determinate"
+                                    value={env.successRate}
+                                    color={env.successRate > 95 ? 'success' : env.successRate > 90 ? 'warning' : 'error'}
+                                  />
+                                </Box>
+                                <Box sx={{ minWidth: 35 }}>
+                                  <Typography variant="body2" color="text.secondary">
+                                    {env.successRate.toFixed(1)}%
+                                  </Typography>
+                                </Box>
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={env.successRate > 95 ? 'Excellent' : env.successRate > 90 ? 'Good' : 'Needs Attention'}
+                                color={env.successRate > 95 ? 'success' : env.successRate > 90 ? 'warning' : 'error'}
+                                size="small"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                ) : (
+                  <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 4 }}>
+                    No environment data available
+                  </Typography>
+                )}
               </CardContent>
             </Card>
           </Grid>

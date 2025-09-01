@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Box } from '@mui/material';
@@ -9,6 +9,8 @@ import Dashboard from './components/Dashboard';
 import Navigation from './components/Navigation';
 import Analysis from './components/Analysis';
 import LinksHub from './components/LinksHub';
+import Configuration from './components/Configuration';
+import { DashboardConfig } from './types';
 
 const theme = createTheme({
   palette: {
@@ -66,6 +68,32 @@ const queryClient = new QueryClient({
 });
 
 function App() {
+  const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>({
+    buildConfigs: [],
+    refreshInterval: 30000,
+    maxRetries: 3,
+  });
+
+  // Load configuration from localStorage on app start
+  useEffect(() => {
+    const savedBuilds = localStorage.getItem('jenkins-build-configs');
+    if (savedBuilds) {
+      try {
+        const buildConfigs = JSON.parse(savedBuilds);
+        setDashboardConfig(prev => ({
+          ...prev,
+          buildConfigs,
+        }));
+      } catch (error) {
+        console.error('Failed to load saved build configurations:', error);
+      }
+    }
+  }, []);
+
+  const handleConfigUpdate = (newConfig: DashboardConfig) => {
+    setDashboardConfig(newConfig);
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
@@ -75,9 +103,10 @@ function App() {
             <Navigation />
             <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/analysis" element={<Analysis />} />
-                <Route path="/links" element={<LinksHub />} />
+                <Route path="/" element={<Dashboard config={dashboardConfig} />} />
+                <Route path="/analysis" element={<Analysis config={dashboardConfig} />} />
+                <Route path="/links" element={<LinksHub config={dashboardConfig} />} />
+                <Route path="/configuration" element={<Configuration onConfigUpdate={handleConfigUpdate} />} />
               </Routes>
             </Box>
           </Box>

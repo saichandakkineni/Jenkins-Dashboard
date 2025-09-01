@@ -115,6 +115,8 @@ export interface DashboardFilters {
   startDate?: Date;
   endDate?: Date;
   status?: string;
+  environment?: string;
+  tag?: string;
 }
 
 export interface ClaimedBuild {
@@ -155,4 +157,36 @@ export interface EnvironmentMatrix {
   passedTests: number;
   failedTests: number;
   successRate: number;
+}
+
+// New types for the updated approach
+export interface JenkinsBuildConfig {
+  name: string;
+  buildUrl: string;
+  jobName: string;
+  buildNumber: number;
+  description?: string;
+  environment?: string;
+  tags?: string[];
+}
+
+export interface AllureReportData {
+  buildConfig: JenkinsBuildConfig;
+  summary: AllureSummary | null;
+  results: AllureResult[];
+  reportUrl: string;
+  lastUpdated: Date;
+  status: 'success' | 'error' | 'loading';
+  errorMessage?: string;
+}
+
+export interface AuthenticationConfig {
+  jsessionId: string;
+  jenkinsBaseUrl: string;
+}
+
+export interface DashboardConfig {
+  buildConfigs: JenkinsBuildConfig[];
+  refreshInterval: number;
+  maxRetries: number;
 } 
