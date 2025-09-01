@@ -39,7 +39,7 @@ interface ConfigurationProps {
 const Configuration: React.FC<ConfigurationProps> = ({ onConfigUpdate }) => {
   const [authConfig, setAuthConfig] = useState<AuthenticationConfig>({
     jsessionId: '',
-    jenkinsBaseUrl: 'http://cmob-jenkins.td.com:8080',
+    jenkinsBaseUrl: 'http://jenkins.saichandakkineni.com:8080',
   });
 
   const [buildConfigs, setBuildConfigs] = useState<JenkinsBuildConfig[]>([]);
